@@ -12,7 +12,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useMemo, useCallback, useRef } = React;
+    const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
 /* ================================================================
    병원 근무 시간표 자동 생성기 v3
@@ -172,19 +172,6 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
     })
   );
 
-  // 연차 처리: 해당 기간 해당 의사를 banned에 추가
-  leaves.forEach(lv=>{
-    const start = new Date(lv.startDate);
-    const end   = new Date(lv.endDate);
-    dates.forEach(dt=>{
-      if(dt >= start && dt <= end){
-        const k = keyOf(dt);
-        if(!banned[k]) banned[k] = new Set();
-        banned[k].add(lv.doctor);
-      }
-    });
-  });
-
   // slotFixed 맵
   const slotFixedMap = {};
   doctors.forEach(d=>{ if(d.slotFixed) slotFixedMap[d.name]=d.slotFixed; });
@@ -240,6 +227,19 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
         banned[k].add(c.doctor);
       });
     }
+  });
+
+  // 연차 처리: banned 초기화 후 해당 기간 해당 의사를 banned에 추가
+  leaves.forEach(lv=>{
+    const start = new Date(lv.startDate);
+    const end   = new Date(lv.endDate);
+    dates.forEach(dt=>{
+      if(dt >= start && dt <= end){
+        const k = keyOf(dt);
+        if(!banned[k]) banned[k] = new Set();
+        banned[k].add(lv.doctor);
+      }
+    });
   });
 
   function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
@@ -380,7 +380,7 @@ function App() {
   const [screen, setScreen] = useState("setup");
   const [doctors, setDoctors] = useState([
     { id:"d1", name:"문지연", weeklySlots:4, monthlySats:2, slotFixed:null, ...PALETTE[0] },
-    { id:"d2", name:"연현경", weeklySlots:4, monthlySats:1, slotFixed:null, ...PALETTE[1] },
+    { id:"d2", name:"연현경", weeklySlots:4, monthlySats:2, slotFixed:null, ...PALETTE[1] },
     { id:"d3", name:"신윤경", weeklySlots:3, monthlySats:2, slotFixed:null, ...PALETTE[2] },
     { id:"d4", name:"동수련", weeklySlots:3, monthlySats:1, slotFixed:null, ...PALETTE[3] },
   ]);
@@ -388,7 +388,10 @@ function App() {
   const [editingDocName, setEditingDocName] = useState("");
   const editNameRef = useRef(null);
 
-  const [constraints, setConstraints] = useState([]);
+  const [constraints, setConstraints] = useState([
+    { id:"c1", doctor:"연현경", type:"no_split", slots:[] },
+    { id:"c2", doctor:"동수련", type:"no_split", slots:[] },
+  ]);
   const [showConst, setShowConst] = useState(false);
   const [editConst, setEditConst] = useState(null);
 
@@ -424,11 +427,16 @@ function App() {
   },[doctors]);
 
   const counts = useMemo(()=>{
-    const c={}; doctors.forEach(d=>c[d.name]={am:0,pm:0,sat:0,total:0});
+    const c={}; doctors.forEach(d=>c[d.name]={am:0,pm:0,sat:0,hol:0,total:0});
     Object.entries(schedule).forEach(([,e])=>{
-      ["am","pm","sat"].forEach(s=>(e[s]||[]).forEach(n=>{
-        if(c[n]){c[n][s]++;c[n].total++;}
-      }));
+      if(e.holiday){
+        // 공휴일: sat 슬롯이지만 hol로 별도 카운트
+        (e["sat"]||[]).forEach(n=>{ if(c[n]){c[n].hol++;c[n].total++;} });
+      } else {
+        ["am","pm","sat"].forEach(s=>(e[s]||[]).forEach(n=>{
+          if(c[n]){c[n][s]++;c[n].total++;}
+        }));
+      }
     });
     return c;
   },[schedule,doctors]);
@@ -544,6 +552,94 @@ function App() {
     const a=document.createElement("a");a.href=url;
     a.download=`시간표_${year}_${pad(month+1)}.csv`;a.click();URL.revokeObjectURL(url);
   }
+
+  // ===== 저장 / 불러오기 =====
+  function saveProject(){
+    const data = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      year, month,
+      doctors, constraints, holidays, leaves,
+      schedule,
+      lockedDates: [...lockedDates],
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const dateStr = `${year}${pad(month+1)}`;
+    a.download = `시간표_${dateStr}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function loadProject(file){
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if(!data.version || !data.schedule) throw new Error("올바른 시간표 파일이 아니에요");
+        if(data.doctors) setDoctors(data.doctors);
+        if(data.constraints) setConstraints(data.constraints);
+        if(data.holidays) setHolidays(data.holidays);
+        if(data.leaves) setLeaves(data.leaves);
+        if(data.schedule) setSchedule(data.schedule);
+        if(typeof data.year==="number") setYear(data.year);
+        if(typeof data.month==="number") setMonth(data.month);
+        if(data.lockedDates) setLockedDates(new Set(data.lockedDates));
+        setAnchor(new Date(data.year ?? year, data.month ?? month, 1));
+        setScreen("calendar");
+        setLoadError("");
+      } catch(e){
+        setLoadError(e.message || "파일을 불러오는 데 실패했어요");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  const [loadError, setLoadError] = useState("");
+  const fileInputRef = useRef(null);
+
+  /* ===== LocalStorage 자동 저장/복원 ===== */
+  const LS_KEY = "clinic_schedule_v1";
+
+  // 앱 시작 시 복원
+  useEffect(()=>{
+    try {
+      const saved = localStorage.getItem(LS_KEY);
+      if(!saved) return;
+      const data = JSON.parse(saved);
+      if(!data.version) return;
+      if(data.doctors) setDoctors(data.doctors);
+      if(data.constraints) setConstraints(data.constraints);
+      if(data.holidays) setHolidays(data.holidays);
+      if(data.leaves) setLeaves(data.leaves);
+      if(data.schedule && Object.keys(data.schedule).length > 0){
+        setSchedule(data.schedule);
+        if(typeof data.year==="number") { setYear(data.year); setMonth(data.month); setAnchor(new Date(data.year, data.month, 1)); }
+        if(data.lockedDates) setLockedDates(new Set(data.lockedDates));
+        setScreen("calendar");
+      } else {
+        if(typeof data.year==="number") { setYear(data.year); setMonth(data.month); }
+      }
+    } catch(e){ console.warn("복원 실패:", e); }
+  }, []);
+
+  // 상태 변경 시 자동 저장 (debounce 500ms)
+  useEffect(()=>{
+    const t = setTimeout(()=>{
+      try {
+        const data = {
+          version:1, year, month, doctors, constraints,
+          holidays, leaves, schedule,
+          lockedDates:[...lockedDates],
+        };
+        localStorage.setItem(LS_KEY, JSON.stringify(data));
+      } catch(e){ console.warn("저장 실패:", e); }
+    }, 500);
+    return ()=>clearTimeout(t);
+  }, [year, month, doctors, constraints, holidays, leaves, schedule, lockedDates]);
 
   const Chip=({name,size="sm"})=>{
     const d=docByName[name];
@@ -828,10 +924,26 @@ function App() {
               </div>
             </div>
 
+            <div className="load-section">
+              <button className="load-file-btn" onClick={()=>fileInputRef.current?.click()}>
+                📂 저장된 시간표 불러오기
+              </button>
+              <input ref={fileInputRef} type="file" accept=".json" style={{display:"none"}}
+                onChange={e=>{loadProject(e.target.files?.[0]);e.target.value="";}}/>
+              {loadError&&<div className="load-error" style={{marginTop:8}}>⚠️ {loadError}</div>}
+            </div>
             <button className="generate-btn" onClick={generate} disabled={doctors.length<2}>
               ✨ 시간표 자동 생성
             </button>
             <p className="gen-note">목표 근무 횟수와 제약 조건에 맞게 즉시 최적 배정합니다</p>
+            <p className="gen-note" style={{marginTop:4}}>
+              <button className="clear-storage-btn" onClick={()=>{
+                if(window.confirm("저장된 모든 데이터를 초기화할까요?")) {
+                  localStorage.removeItem(LS_KEY);
+                  window.location.reload();
+                }
+              }}>🗑 저장 데이터 초기화</button>
+            </p>
           </div>
       }
 
@@ -964,6 +1076,7 @@ function App() {
                 <div className="stat-nums">
                   <span>오전 {c.am}</span><span>오후 {c.pm}</span>
                   <span style={{color:"#3B6EA5"}}>토 {c.sat}</span>
+                  {c.hol>0&&<span style={{color:"#C9503E"}}>공휴 {c.hol}</span>}
                 </div>
                 <div className="stat-bar-wrap">
                   <div className="stat-bar" style={{width:`${Math.min(100,c.total/Math.max(1,target)*100)}%`,background:d.dot}}/>
@@ -997,11 +1110,17 @@ function App() {
           <button className="ghost" onClick={()=>setScreen("setup")}>← 재설정</button>
           <button className="ghost" onClick={generate}>↻ 재생성</button>
           {lockedDates.size>0&&<button className="ghost lock-clear" onClick={()=>setLockedDates(new Set())} title="모든 잠금 해제">🔒 {lockedDates.size}개 잠금 해제</button>}
-          <button className="ghost" onClick={exportCSV}>내보내기</button>
+          <span className="autosave-badge" title="변경사항이 브라우저에 자동 저장됩니다">✓ 자동저장</span>
+          <button className="ghost save-btn" onClick={saveProject} title="시간표 전체를 JSON 파일로 저장">💾 파일저장</button>
+          <button className="ghost load-btn" onClick={()=>fileInputRef.current?.click()} title="저장된 JSON 파일 불러오기">📂 불러오기</button>
+          <input ref={fileInputRef} type="file" accept=".json" style={{display:"none"}}
+            onChange={e=>{loadProject(e.target.files?.[0]);e.target.value="";}}/>
+          <button className="ghost" onClick={exportCSV}>CSV</button>
           <button className="ghost" onClick={()=>window.print()}>인쇄</button>
         </div>
       </div>
 
+      {loadError&&<div className="load-error">⚠️ {loadError}</div>}
       <div className="legend-bar">
         {doctors.map(d=>(
           <span key={d.id} className="legendchip" style={{background:d.bg,color:d.text}}>
@@ -1302,6 +1421,21 @@ const CSS=`
 .generate-btn:active:not(:disabled){transform:translateY(0);}
 .generate-btn:disabled{opacity:.45;cursor:not-allowed;}
 .gen-note{text-align:center;font-size:12.5px;color:var(--ink2);margin-top:11px;}
+.load-section{margin-bottom:12px;}
+.autosave-badge{font-size:12px;font-weight:700;color:#2F8F7F;background:#F0FAF7;
+  border:1px solid #B8E4DB;border-radius:8px;padding:6px 10px;white-space:nowrap;}
+.clear-storage-btn{background:none;border:none;color:#9AA4AD;font-size:12px;
+  cursor:pointer;text-decoration:underline;padding:0;}
+.clear-storage-btn:hover{color:var(--sun);}
+.load-file-btn{width:100%;border:1.5px dashed #2F8F7F;background:#F0FAF7;color:#2F8F7F;
+  border-radius:13px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;}
+.load-file-btn:hover{background:#E0F5F0;}
+.load-error{background:#FEF0EE;border:1px solid #F5CECA;border-radius:10px;
+  padding:10px 14px;color:#9C3A2E;font-size:13px;font-weight:600;margin:0 20px;}
+.save-btn{color:#2C5282;border-color:#BFD0E2;}
+.save-btn:hover{background:#EEF4FA;}
+.load-btn{color:#246B5C;border-color:#B8E4DB;}
+.load-btn:hover{background:#F0FAF7;}
 .holiday-hint{font-size:12px;color:var(--ink2);}
 .holiday-add-row{display:flex;gap:8px;margin-bottom:10px;}
 .add-holiday-btn{border:1.5px dashed var(--sun);background:#FEF7F6;color:var(--sun);
