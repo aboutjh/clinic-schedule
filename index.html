@@ -337,6 +337,30 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
     }
   }
 
+  // 주차별 토요일 근무 여부 파악 → 없는 주는 평일 예산 +1
+  // (토요일이 공휴일·병원휴무이거나 해당 주에 토요일이 없으면 없는 것으로 간주)
+  for(let wIdx=0; wIdx<5; wIdx++){
+    const satOfWeek = dates.find(dt=>{
+      const w = weekIdxOf(dt);
+      return w===wIdx && dt.getDay()===6;
+    });
+    const hasSat = satOfWeek &&
+      !holidaySet.has(keyOf(satOfWeek)) &&
+      !( KR_HOLIDAYS[keyOf(satOfWeek)] && CLINIC_CLOSED[KR_HOLIDAYS[keyOf(satOfWeek)]] );
+    if(!hasSat){
+      // 이 주에 토요일 근무 없음 → 모든 의사 평일 예산 +1
+      doctors.forEach(d=>{
+        if(weekRemaining[d.name]?.[wIdx]){
+          weekRemaining[d.name][wIdx]._weeklyBudget += 1;
+          // slotFixed 없는 의사는 am/pm 각각 +1
+          const fixed = slotFixedMap[d.name];
+          if(!fixed || fixed==="am") weekRemaining[d.name][wIdx].am += 1;
+          if(!fixed || fixed==="pm") weekRemaining[d.name][wIdx].pm += 1;
+        }
+      });
+    }
+  }
+
   const schedule = {};
   dates.forEach(dt=>{
     const k=keyOf(dt), wd=dt.getDay();
