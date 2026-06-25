@@ -591,13 +591,7 @@ function App() {
   // ===== 인쇄 =====
   const [isPrinting, setIsPrinting] = useState(false);
   function openPrintWindow(){
-    const restore = () => {
-      setIsPrinting(false);
-      window.removeEventListener("afterprint", restore);
-    };
-    window.addEventListener("afterprint", restore);
     setIsPrinting(true);
-    // 인쇄 화면 렌더링 후 인쇄 대화상자 열기
     setTimeout(()=>{ window.print(); }, 400);
   }
 
