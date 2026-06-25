@@ -498,7 +498,10 @@ function App() {
       const arr=cur[slot]?[...cur[slot]]:[];
       const i=arr.indexOf(name);
       if(i>=0)arr.splice(i,1);else arr.push(name);
-      return {...prev,[k]:{...cur,[slot]:arr}};
+      // 수동 수정 후에도 표기 원칙(가나다순 + 연속근무자 우선) 적용
+      const newEntry={...cur,[slot]:arr};
+      const sorted=sortNames(arr,slot,newEntry);
+      return {...prev,[k]:{...cur,[slot]:sorted}};
     });
   },[]);
   const setClosed=useCallback((dt,val)=>{
