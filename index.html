@@ -319,13 +319,16 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
       const rest = shuffle(topGroup).concat(available.filter(d=>getRemBudget(d)<topScore));
       for(const d of rest){ if(chosen.length>=2) break; chosen.push(d.name); }
 
-      // overflow: slotFixed 없는 의사만 주당 한도 초과 허용
+      // overflow: 1번 의사(문지연)만 주당 한도 초과 허용, 나머지는 초과 배정 안 함
       if(chosen.length < 2){
+        const fillerDoctor = doctors[0]; // 문지연
         const overflow = doctors.filter(d=>{
           if(bannedSet.has(d.name)||chosen.includes(d.name)) return false;
           if(noSplit.has(d.name) && alreadyAssigned.includes(d.name)) return false;
           if(slotFixedMap[d.name] && slotFixedMap[d.name]!==slot) return false;
           if(slotFixedMap[d.name]) return false;
+          // 1번 의사만 초과 허용, 나머지는 한도 초과 시 제외
+          if(d.name !== fillerDoctor?.name && !canAssignWeekday(d.name, slot, wIdx)) return false;
           return true;
         });
         for(const d of overflow){ if(chosen.length>=2) break; chosen.push(d.name); }
@@ -1149,6 +1152,7 @@ function App() {
           <span className="rule-title">📋 배정 원칙</span>
           <span className="rule-item">· 1일 포함 주 월요일부터 5주(35일)간 배정 · 평일 오전·오후 슬롯당 2명</span>
           <span className="rule-item">· 추석 당일·설날 당일·크리스마스·신정은 병원 휴무 자동 적용</span>
+          <span className="rule-item">· <b>{doctors[0]?.name}</b>을 제외한 의사는 정해진 주당 근무 횟수 초과 배정 없음</span>
           <span className="rule-item">· 토요일 슬롯 2명 배정, 인원 부족 시 <b>{doctors[0]?.name}</b>이(가) 우선 채움</span>
           <span className="rule-item">· 오전·오후 전담 설정은 평일에만 적용 (토요일·공휴일 무관)
           <span className="rule-item">· 공휴일은 1타임 2명 배정 (토요일과 동일 방식)</span></span>
@@ -1171,6 +1175,23 @@ function constraintPins(dt,constraints){
     ((c.type==="work_weekday"||c.type==="off_weekday")&&c.weekday===wd)||
     ((c.type==="work_date"||c.type==="off_date")&&c.date===k)
   );
+}
+
+/* 표기 원칙:
+   1. 가나다순 정렬
+   2. 오전+오후 연속근무자를 앞에 표기 (해당 슬롯 기준) */
+function sortNames(names, slot, entry){
+  if(!names || !names.length) return names;
+  const sorted = [...names].sort((a,b)=>a.localeCompare(b,"ko"));
+  if(slot === "am" || slot === "pm"){
+    const otherSlot = slot === "am" ? "pm" : "am";
+    const otherNames = entry[otherSlot] || [];
+    // 연속근무자(다른 슬롯에도 배정된 의사)를 앞으로
+    const continuous = sorted.filter(n => otherNames.includes(n));
+    const single     = sorted.filter(n => !otherNames.includes(n));
+    return [...continuous, ...single];
+  }
+  return sorted;
 }
 
 function MonthView({cells,month0,schedule,Chip,onPick,constraints,lockedDates,toggleLock,leaves}){
@@ -1218,7 +1239,7 @@ function MonthView({cells,month0,schedule,Chip,onPick,constraints,lockedDates,to
                 {["sat","am","pm"].map(s=>e[s]&&s!=="holiday"&&(
                   <div className="slotrow" key={s}>
                     <span className="slotlabel">{e.holiday?"진료":SLOT_TAG[s]}</span>
-                    <div className="chips">{e[s].length?e[s].map(n=><Chip key={n} name={n}/>):<span className="empty">미배정</span>}</div>
+                    <div className="chips">{(()=>{ const sorted=sortNames(e[s],s,e); return sorted.length?sorted.map(n=><Chip key={n} name={n}/>):<span className="empty">미배정</span>; })()}</div>
                   </div>
                 ))}
               </div>
@@ -1246,7 +1267,7 @@ function WeekView({days,schedule,Chip,onPick}){
         const head=(<div key={`h${i}`} className={`wcell whead ${wd===6?"sat":""} ${wd===0?"sun":""}`}
           style={{gridColumn:col,gridRow:1}}>{dt.getMonth()+1}/{dt.getDate()} ({WD_KR[wd]})</div>);
         const cellC=slot=>(<div className="chips wk" onClick={()=>onPick(dt)} role="button" tabIndex={0}>
-          {(e[slot]||[]).length?e[slot].map(n=><Chip key={n} name={n}/>):<span className="empty">미배정</span>}
+          {(()=>{ const sorted=sortNames(e[slot]||[],slot,e); return sorted.length?sorted.map(n=><Chip key={n} name={n}/>):<span className="empty">미배정</span>; })()}
         </div>);
         let body;
         if(e.closed){body=(<div key={`b${i}`} className="wcell merged closedcell"
