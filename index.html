@@ -11,7 +11,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel">
+    <script type="text/babel">
     const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
 /* ================================================================
@@ -146,7 +146,16 @@ function getKrHolidaysForMonth(year, m0) {
 }
 
 function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
-  // 1일이 포함된 주의 월요일부터 4주(28일) 배정
+  // ================================================================
+  // 배정 원칙:
+  // - 1일 = 1슬롯 (오전 OR 오후, 구분 없이 동일)
+  // - 주당 N일 설정 = 해당 주에 N슬롯 배정
+  // - 토요일 있는 주: 평일 (N-1)슬롯 + 토요일 1슬롯 = 총 N슬롯
+  // - 토요일 없는 주: 평일 N슬롯
+  // - 월간 토요일 횟수는 별도 제한
+  // ================================================================
+
+  // 1일이 포함된 주 월요일부터 5주(35일)
   const firstDay = new Date(year, m0, 1);
   const dayOfWeek = firstDay.getDay();
   const offsetToMon = dayOfWeek === 0 ? 1 : dayOfWeek === 1 ? 0 : -(dayOfWeek - 1);
@@ -161,79 +170,53 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
   }
   const weekIdxOf = dt => Math.floor((dt.getTime() - firstMon.getTime()) / (7*24*3600*1000));
 
-  // 법정 공휴일 + 사용자 지정 공휴일 합산
-  // KR_HOLIDAYS는 이미 평일 공휴일만 포함 (토요일 제외됨)
-  // 사용자 추가 공휴일도 토요일/일요일은 제외
+  // 법정 공휴일 + 사용자 공휴일 (평일만)
   const krHols = getKrHolidaysForMonth(year, m0);
   const holidaySet = new Set(
     [...krHols, ...holidays].filter(k => {
       const wd = new Date(k).getDay();
-      return wd !== 0 && wd !== 6; // 평일 공휴일만
+      return wd !== 0 && wd !== 6;
     })
   );
 
-  // slotFixed 맵
-  const slotFixedMap = {};
-  doctors.forEach(d=>{ if(d.slotFixed) slotFixedMap[d.name]=d.slotFixed; });
-
-  // 주차별 잔여 카운터
-  const weekRemaining = {};
-  doctors.forEach(d=>{
-    const fixed = slotFixedMap[d.name];
-    weekRemaining[d.name] = Array.from({length:5}, () => ({
-      am:  fixed === "pm" ? 0 : d.weeklySlots,
-      pm:  fixed === "am" ? 0 : d.weeklySlots,
-      _weeklyBudget: d.weeklySlots,
-      _used: 0,
-    }));
-  });
-
-  // 토요일 월간 카운터 (공휴일과 별도 관리)
-  const satRemaining = {};
-  const holRemaining = {}; // 공휴일은 별도 카운터 — 무제한 (2명만 채우면 됨)
-  doctors.forEach(d=>{
-    satRemaining[d.name] = d.monthlySats;
-    holRemaining[d.name] = 99; // 공휴일은 횟수 제한 없음, 2명 채우기만
-  });
-
   // 제약 인덱싱
   const mustWork = {};
-  const banned  = {};
+  const banned = {};
   const noSplit = new Set();
 
-  constraints.forEach(c=>{
-    if(c.type==="no_split"){ noSplit.add(c.doctor); return; }
-    if(c.type==="work_weekday"||c.type==="work_date"){
-      const applyDates = c.type==="work_weekday"
-        ? dates.filter(d=>String(d.getDay())===String(c.weekday))
-        : dates.filter(d=>keyOf(d)===c.date);
-      applyDates.forEach(dt=>{
-        const k=keyOf(dt);
-        if(!mustWork[k]) mustWork[k]={};
-        const defaultSlots = dt.getDay()===6?["sat"]:["am","pm"];
-        const slotsToApply = (c.slots&&c.slots.length) ? c.slots : defaultSlots;
-        slotsToApply.forEach(s=>{
-          if(!mustWork[k][s]) mustWork[k][s]=[];
+  constraints.forEach(c => {
+    if(c.type === "no_split"){ noSplit.add(c.doctor); return; }
+    if(c.type === "work_weekday" || c.type === "work_date"){
+      const applyDates = c.type === "work_weekday"
+        ? dates.filter(d => String(d.getDay()) === String(c.weekday))
+        : dates.filter(d => keyOf(d) === c.date);
+      applyDates.forEach(dt => {
+        const k = keyOf(dt);
+        if(!mustWork[k]) mustWork[k] = {};
+        const defaultSlots = dt.getDay() === 6 ? ["sat"] : ["am","pm"];
+        const slotsToApply = (c.slots && c.slots.length) ? c.slots : defaultSlots;
+        slotsToApply.forEach(s => {
+          if(!mustWork[k][s]) mustWork[k][s] = [];
           if(!mustWork[k][s].includes(c.doctor)) mustWork[k][s].push(c.doctor);
         });
       });
     } else {
-      const applyDates = c.type==="off_weekday"
-        ? dates.filter(d=>String(d.getDay())===String(c.weekday))
-        : dates.filter(d=>keyOf(d)===c.date);
-      applyDates.forEach(dt=>{
-        const k=keyOf(dt);
-        if(!banned[k]) banned[k]=new Set();
+      const applyDates = c.type === "off_weekday"
+        ? dates.filter(d => String(d.getDay()) === String(c.weekday))
+        : dates.filter(d => keyOf(d) === c.date);
+      applyDates.forEach(dt => {
+        const k = keyOf(dt);
+        if(!banned[k]) banned[k] = new Set();
         banned[k].add(c.doctor);
       });
     }
   });
 
-  // 연차 처리: banned 초기화 후 해당 기간 해당 의사를 banned에 추가
-  leaves.forEach(lv=>{
+  // 연차 처리
+  leaves.forEach(lv => {
     const start = new Date(lv.startDate);
     const end   = new Date(lv.endDate);
-    dates.forEach(dt=>{
+    dates.forEach(dt => {
       if(dt >= start && dt <= end){
         const k = keyOf(dt);
         if(!banned[k]) banned[k] = new Set();
@@ -242,160 +225,181 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
     });
   });
 
-  function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
+  // slotFixed 맵
+  const slotFixedMap = {};
+  doctors.forEach(d => { if(d.slotFixed) slotFixedMap[d.name] = d.slotFixed; });
 
-  function canAssignWeekday(name, slot, wIdx){
-    const w = weekRemaining[name][wIdx];
-    if(!w) return false;
-    if(slotFixedMap[name] && slotFixedMap[name] !== slot) return false;
-    if(w[slot] <= 0) return false;
-    if(w._used >= w._weeklyBudget) return false;
-    return true;
+  // 주차별 토요일 유무 파악
+  const hasSatByWeek = Array.from({length:5}, (_,wIdx) => {
+    return dates.some(dt => weekIdxOf(dt) === wIdx && dt.getDay() === 6);
+  });
+
+  // ----------------------------------------------------------------
+  // 주차별 잔여 슬롯: 1슬롯 단위 통합 관리
+  // 토요일 있는 주: 평일예산 = weeklySlots - 1 (토요일 1슬롯 차감)
+  // 토요일 없는 주: 평일예산 = weeklySlots
+  // ----------------------------------------------------------------
+  const weekRemaining = {}; // [name][wIdx] = { slots: N, satSlot: 0|1 }
+  doctors.forEach(d => {
+    weekRemaining[d.name] = Array.from({length:5}, () => ({
+      weekday: d.weeklySlots, // 주당 총 슬롯 예산 (토요일 배정 시 차감됨)
+    }));
+  });
+
+  // 월간 토요일 카운터
+  const satRemaining = {};
+  doctors.forEach(d => { satRemaining[d.name] = d.monthlySats; });
+
+  // 공휴일 카운터 (무제한)
+  const holRemaining = {};
+  doctors.forEach(d => { holRemaining[d.name] = 99; });
+
+  function shuffle(arr){
+    const a = [...arr];
+    for(let i=a.length-1; i>0; i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+    return a;
   }
 
-  function useWeekday(name, slot, wIdx){
-    const w = weekRemaining[name][wIdx];
-    if(!w) return;
-    w[slot] = Math.max(0, w[slot] - 1);
-    w._used++;
-  }
-
-  // 공통 2명 채우기 함수 (토요일/공휴일용)
-  function assignTwoFromPool(dt, remMap, bannedSet, must){
+  // 2명 채우기 (토요일/공휴일용)
+  function assignTwo(dt, remMap, bannedSet, must){
     const chosen = [...must];
-    if(chosen.length>=2) return chosen.slice(0,2);
+    if(chosen.length >= 2) return chosen.slice(0,2);
 
-    const available = doctors.filter(d=>{
+    const available = doctors.filter(d => {
       if(bannedSet.has(d.name)) return false;
       if(chosen.includes(d.name)) return false;
-      return (remMap[d.name]||0) > 0;
-    }).sort((a,b)=>(remMap[b.name]||0)-(remMap[a.name]||0));
+      return (remMap[d.name] || 0) > 0;
+    }).sort((a,b) => (remMap[b.name]||0) - (remMap[a.name]||0));
 
     const topScore = remMap[available[0]?.name] ?? 0;
-    const topGroup = available.filter(d=>(remMap[d.name]||0)===topScore);
-    const rest = shuffle(topGroup).concat(available.filter(d=>(remMap[d.name]||0)<topScore));
+    const topGroup = available.filter(d => (remMap[d.name]||0) === topScore);
+    const rest = shuffle(topGroup).concat(available.filter(d => (remMap[d.name]||0) < topScore));
     for(const d of rest){ if(chosen.length>=2) break; chosen.push(d.name); }
 
-    // 부족하면 전체에서 채움 (1번 의사 우선)
+    // 부족하면 1번 의사(문지연)만 fallback
     if(chosen.length < 2){
-      const fb = [doctors[0], ...doctors.slice(1)].filter(Boolean);
-      for(const d of fb){
-        if(chosen.length>=2) break;
-        if(!bannedSet.has(d.name) && !chosen.includes(d.name)) chosen.push(d.name);
+      const filler = doctors[0];
+      if(filler && !bannedSet.has(filler.name) && !chosen.includes(filler.name)){
+        chosen.push(filler.name);
       }
     }
     return chosen;
   }
 
-  function assignSlot(dt, slot, alreadyAssigned=[]) {
+  // 근무일 배정 (오전 or 오후)
+  function assignWeekdaySlot(dt, slot, alreadyAssigned){
     const k = keyOf(dt);
-    const isSat = slot === "sat";
     const wIdx = weekIdxOf(dt);
-    const must = ((mustWork[k]&&mustWork[k][slot]) ? [...mustWork[k][slot]] : [])
-      .filter(n => isSat || !slotFixedMap[n] || slotFixedMap[n]===slot);
     const bannedSet = banned[k] || new Set();
+    const must = ((mustWork[k]&&mustWork[k][slot]) ? [...mustWork[k][slot]] : [])
+      .filter(n => !slotFixedMap[n] || slotFixedMap[n] === slot);
 
-    if(isSat){
-      return assignTwoFromPool(dt, satRemaining, bannedSet, must);
-    } else {
-      // 평일: 주차별 잔여 기준
-      const available = doctors.filter(d=>{
-        if(bannedSet.has(d.name)) return false;
-        if(must.includes(d.name)) return false;
-        if(noSplit.has(d.name) && alreadyAssigned.includes(d.name)) return false;
-        return canAssignWeekday(d.name, slot, wIdx);
-      }).sort((a,b)=>{
-        const ra = weekRemaining[a.name][wIdx]._weeklyBudget - weekRemaining[a.name][wIdx]._used;
-        const rb = weekRemaining[b.name][wIdx]._weeklyBudget - weekRemaining[b.name][wIdx]._used;
-        return rb - ra;
-      });
+    // 평일 잔여 있고, slotFixed 조건 맞고, noSplit 조건 맞는 의사
+    const available = doctors.filter(d => {
+      if(bannedSet.has(d.name)) return false;
+      if(must.includes(d.name)) return false;
+      if(noSplit.has(d.name) && alreadyAssigned.includes(d.name)) return false;
+      if(slotFixedMap[d.name] && slotFixedMap[d.name] !== slot) return false;
+      if((weekRemaining[d.name][wIdx]?.weekday || 0) <= 0) return false;
+      return true;
+    }).sort((a,b) =>
+      (weekRemaining[b.name][wIdx]?.weekday||0) - (weekRemaining[a.name][wIdx]?.weekday||0)
+    );
 
-      const chosen = [...must];
-      if(chosen.length>=2) return chosen.slice(0,2);
+    const chosen = [...must];
+    if(chosen.length >= 2) return chosen.slice(0,2);
 
-      const getRemBudget = d => weekRemaining[d.name][wIdx]._weeklyBudget - weekRemaining[d.name][wIdx]._used;
-      const topScore = available[0] ? getRemBudget(available[0]) : 0;
-      const topGroup = available.filter(d=>getRemBudget(d)===topScore);
-      const rest = shuffle(topGroup).concat(available.filter(d=>getRemBudget(d)<topScore));
-      for(const d of rest){ if(chosen.length>=2) break; chosen.push(d.name); }
+    const topScore = weekRemaining[available[0]?.name]?.[wIdx]?.weekday ?? 0;
+    const topGroup = available.filter(d => (weekRemaining[d.name][wIdx]?.weekday||0) === topScore);
+    const rest = shuffle(topGroup).concat(
+      available.filter(d => (weekRemaining[d.name][wIdx]?.weekday||0) < topScore)
+    );
+    for(const d of rest){ if(chosen.length>=2) break; chosen.push(d.name); }
 
-      // overflow: 1번 의사(문지연)만 주당 한도 초과 허용, 나머지는 초과 배정 안 함
-      if(chosen.length < 2){
-        const fillerDoctor = doctors[0]; // 문지연
-        const overflow = doctors.filter(d=>{
-          if(bannedSet.has(d.name)||chosen.includes(d.name)) return false;
-          if(noSplit.has(d.name) && alreadyAssigned.includes(d.name)) return false;
-          if(slotFixedMap[d.name] && slotFixedMap[d.name]!==slot) return false;
-          if(slotFixedMap[d.name]) return false;
-          // 1번 의사만 초과 허용, 나머지는 한도 초과 시 제외
-          if(d.name !== fillerDoctor?.name && !canAssignWeekday(d.name, slot, wIdx)) return false;
-          return true;
-        });
-        for(const d of overflow){ if(chosen.length>=2) break; chosen.push(d.name); }
+    // overflow: 1번 의사(문지연)만 한도 초과 허용
+    if(chosen.length < 2){
+      const filler = doctors[0];
+      if(filler &&
+         !bannedSet.has(filler.name) &&
+         !chosen.includes(filler.name) &&
+         (!slotFixedMap[filler.name] || slotFixedMap[filler.name] === slot) &&
+         !(noSplit.has(filler.name) && alreadyAssigned.includes(filler.name))){
+        chosen.push(filler.name);
       }
-      return chosen;
     }
-  }
-
-  // 주차별 토요일 근무 여부 파악 → 없는 주는 평일 예산 +1
-  // (토요일이 공휴일·병원휴무이거나 해당 주에 토요일이 없으면 없는 것으로 간주)
-  for(let wIdx=0; wIdx<5; wIdx++){
-    const satOfWeek = dates.find(dt=>{
-      const w = weekIdxOf(dt);
-      return w===wIdx && dt.getDay()===6;
-    });
-    const hasSat = satOfWeek &&
-      !holidaySet.has(keyOf(satOfWeek)) &&
-      !( KR_HOLIDAYS[keyOf(satOfWeek)] && CLINIC_CLOSED[KR_HOLIDAYS[keyOf(satOfWeek)]] );
-    if(!hasSat){
-      // 이 주에 토요일 근무 없음 → 모든 의사 평일 예산 +1
-      doctors.forEach(d=>{
-        if(weekRemaining[d.name]?.[wIdx]){
-          weekRemaining[d.name][wIdx]._weeklyBudget += 1;
-          // slotFixed 없는 의사는 am/pm 각각 +1
-          const fixed = slotFixedMap[d.name];
-          if(!fixed || fixed==="am") weekRemaining[d.name][wIdx].am += 1;
-          if(!fixed || fixed==="pm") weekRemaining[d.name][wIdx].pm += 1;
-        }
-      });
-    }
+    return chosen;
   }
 
   const schedule = {};
-  dates.forEach(dt=>{
-    const k=keyOf(dt), wd=dt.getDay();
-    if(wd===0){ schedule[k]={closed:true}; return; }
-    const wIdx = weekIdxOf(dt);
 
-    // 병원 휴무일: 추석 당일, 설날 당일, 크리스마스, 신정
-    const holidayName = KR_HOLIDAYS[k];
-    if(holidayName && CLINIC_CLOSED[holidayName]){
-      schedule[k]={closed:true, clinicClosed:true};
-      return;
+  // 주차별로 처리: 토요일 먼저 배정 후 평일 배정 (순서 중요)
+  for(let wIdx = 0; wIdx < 5; wIdx++){
+    const weekDates = dates.filter(dt => weekIdxOf(dt) === wIdx);
+
+    // 1단계: 일요일 / 병원 휴무 / 공휴일 먼저 처리
+    weekDates.forEach(dt => {
+      const k = keyOf(dt);
+      const wd = dt.getDay();
+      if(wd === 0){ schedule[k] = {closed:true}; return; }
+      const holidayName = KR_HOLIDAYS[k];
+      if(holidayName && CLINIC_CLOSED[holidayName]){
+        schedule[k] = {closed:true, clinicClosed:true}; return;
+      }
+      if(holidaySet.has(k)){
+        const bannedSet = banned[k] || new Set();
+        const must = (mustWork[k]&&mustWork[k]["sat"]) ? [...mustWork[k]["sat"]] : [];
+        const names = assignTwo(dt, holRemaining, bannedSet, must);
+        schedule[k] = {sat:names, holiday:true};
+      }
+    });
+
+    // 2단계: 토요일 먼저 배정 → 해당 주 평일 예산 차감
+    const satDt = weekDates.find(dt => dt.getDay() === 6);
+    if(satDt){
+      const k = keyOf(satDt);
+      if(!schedule[k]){ // 아직 처리 안 된 경우만
+        const bannedSet = banned[k] || new Set();
+        const satPool = {};
+        doctors.forEach(d => {
+          satPool[d.name] = satRemaining[d.name] > 0 ? satRemaining[d.name] : 0;
+        });
+        const must = ((mustWork[k]&&mustWork[k]["sat"]) ? [...mustWork[k]["sat"]] : [])
+          .filter(n => satPool[n] > 0 || n === doctors[0]?.name);
+        const names = assignTwo(satDt, satPool, bannedSet, must);
+        names.forEach(n => {
+          satRemaining[n] = Math.max(0, satRemaining[n] - 1);
+          // 토요일 배정 의사: 해당 주 평일 예산 1 차감
+          if(weekRemaining[n]?.[wIdx]){
+            weekRemaining[n][wIdx].weekday = Math.max(0, weekRemaining[n][wIdx].weekday - 1);
+          }
+        });
+        schedule[k] = {sat:names};
+      }
     }
 
-    // 평일 공휴일: 횟수 제한 없이 2명 배정 (holRemaining 사용)
-    if(holidaySet.has(k)){
-      const bannedSet = banned[k] || new Set();
-      const must = (mustWork[k]&&mustWork[k]["sat"]) ? [...mustWork[k]["sat"]] : [];
-      const names = assignTwoFromPool(dt, holRemaining, bannedSet, must);
-      // holRemaining은 줄이지 않음 (무제한)
-      schedule[k]={sat:names, holiday:true};
-      return;
-    }
-
-    if(wd===6){
-      const names=assignSlot(dt,"sat",[]);
-      names.forEach(n=>{ satRemaining[n]=Math.max(0,satRemaining[n]-1); });
-      schedule[k]={sat:names};
-    } else {
-      const am=assignSlot(dt,"am",[]);
-      am.forEach(n=>useWeekday(n,"am",wIdx));
-      const pm=assignSlot(dt,"pm",am);
-      pm.forEach(n=>useWeekday(n,"pm",wIdx));
-      schedule[k]={am,pm};
-    }
-  });
+    // 3단계: 평일 배정 (토요일 차감 반영 후)
+    const weekdayDates = weekDates.filter(dt => {
+      const wd = dt.getDay();
+      return wd >= 1 && wd <= 5 && !schedule[keyOf(dt)];
+    });
+    weekdayDates.forEach(dt => {
+      const k = keyOf(dt);
+      const am = assignWeekdaySlot(dt, "am", []);
+      am.forEach(n => {
+        if(weekRemaining[n]?.[wIdx])
+          weekRemaining[n][wIdx].weekday = Math.max(0, weekRemaining[n][wIdx].weekday - 1);
+      });
+      const pm = assignWeekdaySlot(dt, "pm", am);
+      pm.forEach(n => {
+        if(weekRemaining[n]?.[wIdx])
+          weekRemaining[n][wIdx].weekday = Math.max(0, weekRemaining[n][wIdx].weekday - 1);
+      });
+      schedule[k] = {am, pm};
+    });
+  }
 
   return schedule;
 }
@@ -403,6 +407,7 @@ function autoSchedule(doctors, constraints, year, m0, holidays=[], leaves=[]) {
 /* ================================================================
    MAIN APP
 ================================================================ */
+
 function App() {
   const [screen, setScreen] = useState("setup");
   const [doctors, setDoctors] = useState([
@@ -583,7 +588,20 @@ function App() {
     a.download=`시간표_${year}_${pad(month+1)}.csv`;a.click();URL.revokeObjectURL(url);
   }
 
-  // ===== 저장 / 불러오기 =====
+  // ===== 인쇄 =====
+  const [isPrinting, setIsPrinting] = useState(false);
+  function openPrintWindow(){
+    const restore = () => {
+      setIsPrinting(false);
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    setIsPrinting(true);
+    // 인쇄 화면 렌더링 후 인쇄 대화상자 열기
+    setTimeout(()=>{ window.print(); }, 400);
+  }
+
+    // ===== 저장 / 불러오기 =====
   function saveProject(){
     const data = {
       version: 1,
@@ -857,10 +875,10 @@ function App() {
                   {/* 하단: 스테퍼들 + 전담슬롯 */}
                   <div className="doc-card-controls">
                     <div className="doc-ctrl-item">
-                      <span className="ctrl-label">평일 슬롯</span>
+                      <span className="ctrl-label">근무일</span>
                       <div className="stepper">
                         <button onClick={()=>setDoctors(prev=>prev.map((x,j)=>j===i?{...x,weeklySlots:Math.max(1,x.weeklySlots-1)}:x))}>−</button>
-                        <span>{d.weeklySlots}<small>회/주</small></span>
+                        <span>{d.weeklySlots}<small>일/주</small></span>
                         <button onClick={()=>setDoctors(prev=>prev.map((x,j)=>j===i?{...x,weeklySlots:Math.min(10,x.weeklySlots+1)}:x))}>+</button>
                       </div>
                     </div>
@@ -897,7 +915,7 @@ function App() {
                     setNewName("");}}}/>
                 <div className="stepper small">
                   <button onClick={()=>setNewWS(v=>Math.max(1,v-1))}>−</button>
-                  <span>{newWS}<small>슬롯/주</small></span>
+                  <span>{newWS}<small>일/주</small></span>
                   <button onClick={()=>setNewWS(v=>Math.min(10,v+1))}>+</button>
                 </div>
                 <div className="stepper small">
@@ -1089,6 +1107,40 @@ function App() {
       return d;});
   };
 
+  // 인쇄 모드
+  if(isPrinting) return (
+    <div className="print-wrap"><style>{CSS + PRINT_CSS}</style>
+      <div className="print-header">
+        <div className="print-header-row">
+          <h1 className="print-title">{anchor.getFullYear()}년 {anchor.getMonth()+1}월 진료 시간표</h1>
+          <button className="print-close no-print" onClick={()=>setIsPrinting(false)}>← 시간표로 돌아가기</button>
+        </div>
+      </div>
+      <MonthView
+        cells={monthCells(anchor.getFullYear(),anchor.getMonth())}
+        month0={anchor.getMonth()}
+        schedule={schedule}
+        Chip={({name,size})=>{
+          const d=docByName[name];
+          const s=d?{background:d.bg,color:d.text}:{background:"#ECEEF0",color:"#6B7280"};
+          return(<span className={"chip "+(size||"sm")} style={s}><span className="dot" style={{background:d?d.dot:"#9AA3AD"}}/>{name}</span>);
+        }}
+        onPick={()=>{}}
+        constraints={constraints}
+        lockedDates={new Set()}
+        toggleLock={()=>{}}
+        leaves={[]}
+        isPrint={true}
+      />
+      <div className="print-footer">
+        <span className="ftitle">[진료시간 안내]</span>
+        <span><b>평일</b> 10:00 ~ 21:00</span>
+        <span style={{color:"#3B6EA5"}}><b>토요일</b> 10:00 ~ 17:00</span>
+        <span style={{color:"#C9503E"}}><b>공휴일</b> 10:00 ~ 16:00</span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="app"><style>{CSS}</style>
       <header className="header">
@@ -1146,7 +1198,7 @@ function App() {
           <input ref={fileInputRef} type="file" accept=".json" style={{display:"none"}}
             onChange={e=>{loadProject(e.target.files?.[0]);e.target.value="";}}/>
           <button className="ghost" onClick={exportCSV}>CSV</button>
-          <button className="ghost" onClick={()=>window.print()}>인쇄</button>
+          <button className="ghost" onClick={openPrintWindow}>🖨 인쇄</button>
         </div>
       </div>
 
@@ -1163,21 +1215,21 @@ function App() {
 
       <div className="scrollx">
         {view==="month"
-          ?<MonthView cells={cells} month0={anchor.getMonth()} schedule={schedule} Chip={Chip} onPick={setEditDate} constraints={constraints} lockedDates={lockedDates} toggleLock={toggleLock} leaves={leaves}/>
+          ?<MonthView cells={cells} month0={anchor.getMonth()} schedule={schedule} Chip={Chip} onPick={setEditDate} constraints={constraints} lockedDates={lockedDates} toggleLock={toggleLock} leaves={leaves} isPrint={false}/>
           :<WeekView days={weekDays} schedule={schedule} Chip={Chip} onPick={setEditDate}/>
         }
       </div>
 
       <footer className="footer">
         <div className="footer-top">
-          <span className="ftitle">진료시간 안내</span>
+          <span className="ftitle">[진료시간 안내]</span>
           <span className="finfo"><b>평일</b> 10:00 ~ 21:00</span>
           <span className="finfo sat"><b>토요일</b> 10:00 ~ 17:00</span>
           <span className="finfo sun"><b>공휴일</b> 10:00 ~ 16:00</span>
         </div>
         <div className="footer-rule">
           <span className="rule-title">📋 배정 원칙</span>
-          <span className="rule-item">· 1일 포함 주 월요일부터 5주(35일)간 배정 · 평일 오전·오후 슬롯당 2명</span>
+          <span className="rule-item">· 1일 포함 주 월요일부터 5주(35일)간 배정 · 1일=1슬롯 기준 · 슬롯당 2명</span>
           <span className="rule-item">· 추석 당일·설날 당일·크리스마스·신정은 병원 휴무 자동 적용</span>
           <span className="rule-item">· <b>{doctors[0]?.name}</b>을 제외한 의사는 정해진 주당 근무 횟수 초과 배정 없음</span>
           <span className="rule-item">· 토요일 슬롯 2명 배정, 인원 부족 시 <b>{doctors[0]?.name}</b>이(가) 우선 채움</span>
@@ -1221,7 +1273,7 @@ function sortNames(names, slot, entry){
   return sorted;
 }
 
-function MonthView({cells,month0,schedule,Chip,onPick,constraints,lockedDates,toggleLock,leaves}){
+function MonthView({cells,month0,schedule,Chip,onPick,constraints,lockedDates,toggleLock,leaves,isPrint}){
   return(
     <div className="monthgrid">
       {["월","화","수","목","금","토","일"].map((w,i)=>(
@@ -1250,7 +1302,7 @@ function MonthView({cells,month0,schedule,Chip,onPick,constraints,lockedDates,to
                   <span key={lv.id} className="leave-pin" title={`${lv.doctor} 연차`}>🏖 {lv.doctor}</span>
                 ))}</div>;
               })()}
-              {!e.closed&&Object.keys(e).length>0&&(
+              {!isPrint&&!e.closed&&Object.keys(e).length>0&&(
                 <label className="lock-label" onClick={ev=>ev.stopPropagation()} title="재생성 시 이 날짜 유지">
                   <input type="checkbox"
                     checked={lockedDates.has(keyOf(dt))}
@@ -1722,6 +1774,32 @@ const CSS=`
   .monthgrid,.weekgrid{min-width:0;}
 }
 `;
+
+
+    const PRINT_CSS = `
+.print-wrap{background:#fff;padding:16px;max-width:1100px;margin:0 auto;}
+.print-header{margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #E2E6EA;}
+.print-title{font-size:20px;font-weight:900;margin-bottom:8px;}
+.print-legend{display:flex;flex-wrap:wrap;gap:6px;}
+.print-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;
+  border-radius:99px;font-size:12px;font-weight:700;}
+.print-footer{display:flex;gap:16px;margin-top:10px;padding-top:8px;
+  border-top:1px solid #E2E6EA;font-size:12px;color:#5C6873;}
+.print-footer b{color:#1E2A35;margin-right:4px;}
+.print-header-row{display:flex;justify-content:space-between;align-items:center;}
+.print-close{border:1px solid #E2E6EA;background:#fff;border-radius:9px;
+  padding:8px 16px;font-size:13px;font-weight:700;color:#3B6EA5;cursor:pointer;}
+.print-close:hover{background:#EEF4FA;}
+@media print{
+  body *{visibility:hidden;}
+  .print-wrap,.print-wrap *{visibility:visible;}
+  .print-wrap{position:absolute;top:0;left:0;width:100%;}
+  .no-print{display:none!important;}
+  .daycell:hover{box-shadow:none!important;}
+  .lock-label{display:none!important;}
+  .lock-checkbox{display:none!important;}
+  .leave-pins{display:none!important;}
+}`;
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
